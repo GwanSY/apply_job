@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "ApplyJob Side Panel",
+  "version": "0.1.0",
+  "description": "Resume parsing and autofill assistant for browser applications.",
+  "permissions": ["storage", "sidePanel", "tabs", "scripting", "activeTab", "unlimitedStorage"],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "side_panel": {
+    "default_path": "panel.html"
+  },
+  "action": {
+    "default_title": "ApplyJob"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

@@ -1,0 +1,1 @@
+chrome.runtime.onInstalled.addListener(async()=>{await chrome.sidePanel.setPanelBehavior({openPanelOnActionClick:!0})});chrome.tabs.onUpdated.addListener(async(e,a)=>{if(a.status==="complete")try{await chrome.sidePanel.setOptions({tabId:e,path:"panel.html",enabled:!0})}catch{}});
