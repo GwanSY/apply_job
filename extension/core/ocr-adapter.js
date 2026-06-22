@@ -65,6 +65,30 @@ async function recognizeCanvas(worker, canvas) {
   return text?.trim() || "";
 }
 
+async function recognizeCanvasByLines(worker, canvas) {
+  const segments = splitCanvasIntoTextLines(canvas);
+  if (segments.length === 0) {
+    return await recognizeCanvas(worker, canvas);
+  }
+
+  const texts = [];
+  for (const segment of segments) {
+    const text = normalizeExtractedText(
+      await worker.recognize(
+        segment,
+        {
+          tessedit_pageseg_mode: "7"
+        }
+      ).then(({ data }) => data?.text || "")
+    );
+    if (text) {
+      texts.push(text);
+    }
+  }
+
+  return normalizeExtractedText(texts.join("\n"));
+}
+
 function normalizeExtractedText(text) {
   return text
     .replace(/\u0000/g, "")
@@ -181,6 +205,82 @@ function createProcessedCanvas(sourceCanvas) {
   return processedCanvas;
 }
 
+function splitCanvasIntoTextLines(sourceCanvas) {
+  const context = sourceCanvas.getContext("2d", { willReadFrequently: true });
+  if (!context) {
+    return [];
+  }
+
+  const { width, height } = sourceCanvas;
+  const imageData = context.getImageData(0, 0, width, height);
+  const { data } = imageData;
+  const rowInkCounts = new Array(height).fill(0);
+
+  for (let y = 0; y < height; y += 1) {
+    let inkCount = 0;
+    for (let x = 0; x < width; x += 1) {
+      const index = (y * width + x) * 4;
+      if (data[index] < 210) {
+        inkCount += 1;
+      }
+    }
+    rowInkCounts[y] = inkCount;
+  }
+
+  const minInk = Math.max(12, Math.floor(width * 0.015));
+  const bands = [];
+  let bandStart = -1;
+
+  for (let y = 0; y < height; y += 1) {
+    if (rowInkCounts[y] >= minInk) {
+      if (bandStart === -1) {
+        bandStart = y;
+      }
+      continue;
+    }
+
+    if (bandStart !== -1) {
+      bands.push([bandStart, y - 1]);
+      bandStart = -1;
+    }
+  }
+
+  if (bandStart !== -1) {
+    bands.push([bandStart, height - 1]);
+  }
+
+  const mergedBands = [];
+  for (const [top, bottom] of bands) {
+    const previous = mergedBands[mergedBands.length - 1];
+    if (previous && top - previous[1] <= 12) {
+      previous[1] = bottom;
+    } else {
+      mergedBands.push([top, bottom]);
+    }
+  }
+
+  return mergedBands
+    .filter(([top, bottom]) => bottom - top >= 12)
+    .map(([top, bottom]) => {
+      const marginY = 8;
+      const cropTop = Math.max(0, top - marginY);
+      const cropBottom = Math.min(height, bottom + marginY);
+      const segmentHeight = cropBottom - cropTop;
+      const segmentCanvas = document.createElement("canvas");
+      segmentCanvas.width = width;
+      segmentCanvas.height = segmentHeight;
+      const segmentContext = segmentCanvas.getContext("2d");
+      if (!segmentContext) {
+        return null;
+      }
+      segmentContext.fillStyle = "#ffffff";
+      segmentContext.fillRect(0, 0, width, segmentHeight);
+      segmentContext.drawImage(sourceCanvas, 0, cropTop, width, segmentHeight, 0, 0, width, segmentHeight);
+      return segmentCanvas;
+    })
+    .filter(Boolean);
+}
+
 function shouldPreferOcrText(ocrText, textLayerText) {
   const normalizedOcr = normalizeExtractedText(ocrText);
   const normalizedTextLayer = normalizeExtractedText(textLayerText);
@@ -211,7 +311,10 @@ async function extractPdfText(file) {
   const arrayBuffer = await file.arrayBuffer();
   const loadingTask = pdfjsLib.getDocument({
     data: arrayBuffer,
-    disableWorker: true
+    disableWorker: true,
+    cMapUrl: chrome.runtime.getURL("vendor/pdfjs/cmaps/"),
+    cMapPacked: true,
+    standardFontDataUrl: chrome.runtime.getURL("vendor/pdfjs/standard_fonts/")
   });
   const pdf = await loadingTask.promise;
   const pages = [];
@@ -238,7 +341,7 @@ async function extractPdfText(file) {
       }
       await page.render({ canvasContext: context, viewport }).promise;
       const processedCanvas = createProcessedCanvas(canvas);
-      const ocrText = normalizeExtractedText(await recognizeCanvas(worker, processedCanvas));
+      const ocrText = normalizeExtractedText(await recognizeCanvasByLines(worker, processedCanvas));
       finalText = shouldPreferOcrText(ocrText, textLayerText) ? ocrText : textLayerText;
     }
 
