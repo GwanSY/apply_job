@@ -2,6 +2,9 @@ import { createEmptyModules } from "./resume-model.js";
 import { invokeDocumentOcr } from "./ocr-adapter.js";
 import { normalizeText, uid } from "./utils.js";
 
+const DATE_RANGE_PATTERN =
+  /((19|20)\d{2}[./年-]?\d{1,2}([月])?)\s*[-–—~至]\s*((19|20)\d{2}[./年-]?\d{1,2}([月])?|至今|现在|present)/i;
+
 function summarizeTitle(line, fallbackLabel, index) {
   const text = line.replace(/\s+/g, " ").trim();
   if (!text) {
@@ -11,6 +14,32 @@ function summarizeTitle(line, fallbackLabel, index) {
     return text;
   }
   return `${fallbackLabel}${index}`;
+}
+
+function isBulletLine(line) {
+  return /^[>*•\-·]\s*/.test(line.trim());
+}
+
+function hasDateRange(line) {
+  return DATE_RANGE_PATTERN.test(line);
+}
+
+function normalizeBulletText(line) {
+  return line.replace(/^[>*•\-·]\s*/, "").trim();
+}
+
+function inferModuleFromLine(line) {
+  const value = line.toLowerCase().trim();
+  if (!hasDateRange(line)) {
+    return undefined;
+  }
+  if (/(project|项目|rag|mcp|agent|langgraph|llm|platform|dashboard|系统|平台|插件)/i.test(value)) {
+    return "projects";
+  }
+  if (/(intern|实习|company|公司|engineer|开发|research|研究|manager|经理|岗位|工作)/i.test(value)) {
+    return "experience";
+  }
+  return "projects";
 }
 
 function detectSection(line) {
@@ -54,11 +83,112 @@ function buildPrimaryField(moduleKey, line) {
   };
 }
 
-export function parseStructuredResume(text, fileName, fileType) {
-  const lines = normalizeText(text)
+function isLikelyContinuation(previousLine, currentLine) {
+  if (!previousLine || !currentLine) return false;
+  if (detectSection(currentLine) || hasDateRange(currentLine) || isBulletLine(currentLine)) return false;
+  if (hasDateRange(previousLine)) return false;
+  if (/[。；;:：!?]$/.test(previousLine.trim())) return false;
+  if (previousLine.trim().length >= 18) return true;
+  if (/^[,，、.)）]/.test(currentLine.trim())) return true;
+  return false;
+}
+
+function buildLogicalLines(text) {
+  const rawLines = normalizeText(text)
     .split("\n")
     .map((item) => item.trim())
     .filter(Boolean);
+
+  const merged = [];
+  for (const line of rawLines) {
+    const previous = merged[merged.length - 1];
+    if (isLikelyContinuation(previous, line)) {
+      merged[merged.length - 1] = `${previous} ${line}`.replace(/\s+/g, " ").trim();
+    } else {
+      merged.push(line);
+    }
+  }
+  return merged;
+}
+
+function fallbackTitle(moduleKey) {
+  return moduleKey === "education"
+    ? "教育经历"
+    : moduleKey === "experience"
+      ? "工作经历"
+      : moduleKey === "projects"
+        ? "项目经历"
+        : moduleKey === "certificates"
+          ? "证书"
+          : moduleKey === "languages"
+            ? "语言"
+            : "其他信息";
+}
+
+function shouldStartStructuredEntry(moduleKey, line, currentEntry) {
+  if (!currentEntry) return true;
+  if (hasDateRange(line)) return true;
+  if (isBulletLine(line)) return false;
+  if (moduleKey === "education" || moduleKey === "experience" || moduleKey === "projects") {
+    return line.length <= 32 && !/[。；;:：]/.test(line);
+  }
+  return false;
+}
+
+function pushOrAppendDescription(entry, line, label = "描述") {
+  const cleanText = normalizeBulletText(line);
+  if (!cleanText) return;
+  const existingField = entry.fields.find((field) => field.key === "description" && field.label === label);
+  if (existingField) {
+    existingField.value = `${existingField.value}\n${cleanText}`.trim();
+    existingField.sourceExcerpt = `${existingField.sourceExcerpt || ""}\n${line}`.trim();
+    return;
+  }
+  entry.fields.push({
+    id: uid(),
+    key: "description",
+    label,
+    value: cleanText,
+    reusable: true,
+    sourceExcerpt: line
+  });
+}
+
+function createGenericEntry(module, moduleKey, line) {
+  const entryIndex = module.entries.length + 1;
+  const title = summarizeTitle(line, fallbackTitle(moduleKey), entryIndex);
+  const entry = {
+    id: uid(),
+    title,
+    fields: []
+  };
+
+  if (hasDateRange(line)) {
+    entry.fields.push({
+      id: uid(),
+      key: moduleKey === "projects" ? "projectName" : "description",
+      label: moduleKey === "projects" ? "项目名称" : "内容",
+      value: line,
+      reusable: true,
+      sourceExcerpt: line
+    });
+  } else {
+    entry.fields.push({
+      id: uid(),
+      key: "description",
+      label: moduleKey === "projects" ? "项目内容" : "内容",
+      value: line,
+      reusable: true,
+      sourceExcerpt: line
+    });
+  }
+
+  module.entries.push(entry);
+  return entry;
+}
+
+export function parseStructuredResume(text, fileName, fileType) {
+  const lines = buildLogicalLines(text);
 
   const modules = createEmptyModules();
   const moduleMap = new Map(modules.map((item) => [item.key, item]));
@@ -102,37 +232,28 @@ export function parseStructuredResume(text, fileName, fileType) {
       continue;
     }
 
+    if (currentModule === "other") {
+      const inferredModule = inferModuleFromLine(line);
+      if (inferredModule) {
+        currentModule = inferredModule;
+        currentEntry = null;
+      }
+    }
+
     const module = moduleMap.get(currentModule);
     if (!module) continue;
 
     if (["education", "experience", "projects", "certificates", "languages"].includes(currentModule)) {
-      if (!currentEntry || !/^[-*•]/.test(line)) {
+      if (shouldStartStructuredEntry(currentModule, line, currentEntry)) {
         const entryIndex = module.entries.length + 1;
-        const fallbackLabel =
-          currentModule === "education"
-            ? "教育经历"
-            : currentModule === "experience"
-              ? "工作经历"
-              : currentModule === "projects"
-                ? "项目经历"
-                : currentModule === "certificates"
-                  ? "证书"
-                  : "语言";
         currentEntry = {
           id: uid(),
-          title: summarizeTitle(line, fallbackLabel, entryIndex),
+          title: summarizeTitle(line, fallbackTitle(currentModule), entryIndex),
           fields: [buildPrimaryField(currentModule, line)]
         };
         module.entries.push(currentEntry);
       } else {
-        currentEntry.fields.push({
-          id: uid(),
-          key: "description",
-          label: "描述",
-          value: line.replace(/^[-*•]\s*/, ""),
-          reusable: true,
-          sourceExcerpt: line
-        });
+        pushOrAppendDescription(currentEntry, line, "描述");
       }
       continue;
     }
@@ -152,17 +273,12 @@ export function parseStructuredResume(text, fileName, fileType) {
       continue;
     }
 
-    if (module.entries.length === 0) {
-      module.entries.push({ id: uid(), title: "其他", fields: [] });
+    if (!currentEntry || hasDateRange(line)) {
+      currentEntry = createGenericEntry(module, currentModule, line);
+      continue;
     }
-    module.entries[0].fields.push({
-      id: uid(),
-      key: "description",
-      label: "其他信息",
-      value: line,
-      reusable: true,
-      sourceExcerpt: line
-    });
+
+    pushOrAppendDescription(currentEntry, line, currentModule === "projects" ? "项目内容" : "内容");
   }
 
   return {

@@ -27,7 +27,7 @@ npm run build
 
 ## OCR / 解析策略
 
-- `PDF`: 使用 `pdf.js` 渲染页面，再通过 `Tesseract.js` 做中英 OCR
+- `PDF`: 优先使用 `pdf.js` 提取原始文本层；只有文本层不足时，才回退到 `Tesseract.js` OCR
 - `DOCX`: 使用 `Mammoth` 提取文本
 - `DOC`: 当前本地插件版暂不支持，建议先转为 `DOCX / PDF`
 - OCR 对接入口固定在 [extension/core/ocr-adapter.js](/Users/gsy/Documents/ApplyJob/extension/core/ocr-adapter.js)

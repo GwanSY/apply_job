@@ -1,5 +1,4 @@
 const OCR_LANGS = "eng+chi_sim";
-const TESSERACT_LANG_PATH = "https://tessdata.projectnaptha.com/4.0.0";
 
 let workerPromise = null;
 let pdfjsPromise = null;
@@ -17,9 +16,14 @@ async function getWorker() {
     workerPromise = createWorker(OCR_LANGS, 1, {
       workerPath: chrome.runtime.getURL("vendor/tesseract/worker.min.js"),
       corePath: chrome.runtime.getURL("vendor/tesseract-core"),
-      langPath: TESSERACT_LANG_PATH,
+      langPath: chrome.runtime.getURL("vendor/tessdata"),
       workerBlobURL: false,
       logger: () => {}
+    }).then(async (worker) => {
+      await worker.setParameters({
+        preserve_interword_spaces: "1"
+      });
+      return worker;
     });
   }
   return await workerPromise;
@@ -61,9 +65,149 @@ async function recognizeCanvas(worker, canvas) {
   return text?.trim() || "";
 }
 
+function normalizeExtractedText(text) {
+  return text
+    .replace(/\u0000/g, "")
+    .replace(/[ \t]+/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function extractPageTextFromItems(items) {
+  if (!items?.length) return "";
+
+  const rows = [];
+  let currentRow = [];
+  let lastY = null;
+
+  for (const item of items) {
+    if (!("str" in item) || !item.str) continue;
+    const y = Math.round(item.transform?.[5] ?? 0);
+    if (lastY === null || Math.abs(y - lastY) <= 4) {
+      currentRow.push(item.str);
+    } else {
+      rows.push(currentRow.join(" ").trim());
+      currentRow = [item.str];
+    }
+    lastY = y;
+  }
+
+  if (currentRow.length > 0) {
+    rows.push(currentRow.join(" ").trim());
+  }
+
+  return normalizeExtractedText(rows.filter(Boolean).join("\n"));
+}
+
+function looksUsefulText(text) {
+  const normalized = normalizeExtractedText(text);
+  if (normalized.length < 40) return false;
+  const cjkCount = (normalized.match(/[\u4e00-\u9fff]/g) || []).length;
+  const latinCount = (normalized.match(/[A-Za-z]/g) || []).length;
+  const digitCount = (normalized.match(/\d/g) || []).length;
+  return cjkCount + latinCount + digitCount >= 30;
+}
+
+function countMatches(text, pattern) {
+  return (text.match(pattern) || []).length;
+}
+
+function countCjk(text) {
+  return countMatches(text, /[\u4e00-\u9fff]/g);
+}
+
+function scoreExtractedText(text) {
+  const normalized = normalizeExtractedText(text);
+  const cjkCount = countCjk(normalized);
+  const latinCount = countMatches(normalized, /[A-Za-z]/g);
+  const digitCount = countMatches(normalized, /\d/g);
+  const symbolPenalty = countMatches(normalized, /[()[\]{}|=]/g);
+  const bulletBonus = countMatches(normalized, /[•\-–—]/g);
+  return cjkCount * 4 + latinCount + digitCount - symbolPenalty + bulletBonus;
+}
+
+function textLayerNeedsOcr(text) {
+  const normalized = normalizeExtractedText(text);
+  if (!normalized) return true;
+
+  const cjkCount = countCjk(normalized);
+  const latinCount = countMatches(normalized, /[A-Za-z]/g);
+  const digitCount = countMatches(normalized, /\d/g);
+  const meaningfulCount = cjkCount + latinCount + digitCount;
+
+  if (normalized.length < 80) {
+    return true;
+  }
+
+  // Suspicious case for Chinese resumes: lots of English/digits/bullets, but no Chinese at all.
+  if (cjkCount === 0 && latinCount + digitCount >= 30) {
+    return true;
+  }
+
+  if (meaningfulCount >= 30 && cjkCount / meaningfulCount < 0.03 && latinCount + digitCount >= 20) {
+    return true;
+  }
+
+  // Text layer often drops CJK glyphs and leaves punctuation/empty parentheses behind.
+  if (cjkCount <= 4 && /211\s*\(\s*\)/.test(normalized)) {
+    return true;
+  }
+
+  return false;
+}
+
+function createProcessedCanvas(sourceCanvas) {
+  const processedCanvas = document.createElement("canvas");
+  processedCanvas.width = sourceCanvas.width;
+  processedCanvas.height = sourceCanvas.height;
+  const context = processedCanvas.getContext("2d", { willReadFrequently: true });
+  if (!context) {
+    return sourceCanvas;
+  }
+
+  context.drawImage(sourceCanvas, 0, 0);
+  const imageData = context.getImageData(0, 0, processedCanvas.width, processedCanvas.height);
+  const { data } = imageData;
+
+  for (let index = 0; index < data.length; index += 4) {
+    const grayscale = data[index] * 0.299 + data[index + 1] * 0.587 + data[index + 2] * 0.114;
+    const normalized = grayscale > 188 ? 255 : grayscale < 110 ? 0 : grayscale;
+    data[index] = normalized;
+    data[index + 1] = normalized;
+    data[index + 2] = normalized;
+  }
+
+  context.putImageData(imageData, 0, 0);
+  return processedCanvas;
+}
+
+function shouldPreferOcrText(ocrText, textLayerText) {
+  const normalizedOcr = normalizeExtractedText(ocrText);
+  const normalizedTextLayer = normalizeExtractedText(textLayerText);
+  const ocrCjkCount = countCjk(normalizedOcr);
+  const textLayerCjkCount = countCjk(normalizedTextLayer);
+
+  if (!normalizedTextLayer) {
+    return Boolean(normalizedOcr);
+  }
+
+  if (!normalizedOcr) {
+    return false;
+  }
+
+  if (ocrCjkCount >= Math.max(6, textLayerCjkCount * 2)) {
+    return true;
+  }
+
+  if (textLayerCjkCount === 0 && ocrCjkCount > 0) {
+    return true;
+  }
+
+  return scoreExtractedText(normalizedOcr) > scoreExtractedText(normalizedTextLayer);
+}
+
 async function extractPdfText(file) {
   const pdfjsLib = await getPdfjs();
-  const worker = await getWorker();
   const arrayBuffer = await file.arrayBuffer();
   const loadingTask = pdfjsLib.getDocument({
     data: arrayBuffer,
@@ -71,26 +215,40 @@ async function extractPdfText(file) {
   });
   const pdf = await loadingTask.promise;
   const pages = [];
+  let worker = null;
 
   for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
     const page = await pdf.getPage(pageNumber);
-    const viewport = page.getViewport({ scale: 2 });
-    const canvas = document.createElement("canvas");
-    canvas.width = Math.ceil(viewport.width);
-    canvas.height = Math.ceil(viewport.height);
-    const context = canvas.getContext("2d", { willReadFrequently: true });
-    if (!context) {
-      throw new Error("无法创建 PDF 渲染上下文");
+    const textContent = await page.getTextContent();
+    const textLayerText = extractPageTextFromItems(textContent.items);
+    let finalText = textLayerText;
+
+    if (!looksUsefulText(textLayerText) || textLayerNeedsOcr(textLayerText)) {
+      if (!worker) {
+        worker = await getWorker();
+      }
+
+      const viewport = page.getViewport({ scale: 3 });
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.ceil(viewport.width);
+      canvas.height = Math.ceil(viewport.height);
+      const context = canvas.getContext("2d", { willReadFrequently: true });
+      if (!context) {
+        throw new Error("无法创建 PDF 渲染上下文");
+      }
+      await page.render({ canvasContext: context, viewport }).promise;
+      const processedCanvas = createProcessedCanvas(canvas);
+      const ocrText = normalizeExtractedText(await recognizeCanvas(worker, processedCanvas));
+      finalText = shouldPreferOcrText(ocrText, textLayerText) ? ocrText : textLayerText;
     }
-    await page.render({ canvasContext: context, viewport }).promise;
-    const text = await recognizeCanvas(worker, canvas);
-    if (text) {
-      pages.push(text);
+
+    if (finalText) {
+      pages.push(normalizeExtractedText(finalText));
     }
     page.cleanup();
   }
 
-  const merged = pages.join("\n\n").trim();
+  const merged = normalizeExtractedText(pages.join("\n\n"));
   if (!merged) {
     throw new Error("PDF OCR 未识别到文本");
   }

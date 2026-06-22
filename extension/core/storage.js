@@ -34,6 +34,19 @@ export async function setCurrentResume(id) {
   await saveAppState({ ...state, currentResumeId: id });
 }
 
+export async function deleteResume(resumeId) {
+  const state = await getAppState();
+  const resumes = state.resumes.filter((item) => item.id !== resumeId);
+  const nextCurrentResumeId =
+    state.currentResumeId === resumeId ? (resumes[0]?.id || "") : state.currentResumeId;
+
+  await saveAppState({
+    ...state,
+    resumes,
+    currentResumeId: nextCurrentResumeId
+  });
+}
+
 export async function saveTemplate(template) {
   const state = await getAppState();
   const templates = (state.templates || []).filter((item) => item.name !== template.name);
@@ -63,6 +76,16 @@ export async function saveOriginalFile(record, file) {
   await new Promise((resolve, reject) => {
     const tx = db.transaction(FILE_STORE, "readwrite");
     tx.objectStore(FILE_STORE).put({ ...record, file });
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+export async function deleteOriginalFile(id) {
+  const db = await openDb();
+  await new Promise((resolve, reject) => {
+    const tx = db.transaction(FILE_STORE, "readwrite");
+    tx.objectStore(FILE_STORE).delete(id);
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
   });

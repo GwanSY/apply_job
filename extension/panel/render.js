@@ -82,12 +82,15 @@ export function renderPanel(state) {
         上传简历
         <input id="resume-upload" type="file" accept=".pdf,.doc,.docx" />
       </label>
-      <select class="resume-select" id="resume-select">
-        <option value="">选择当前简历</option>
-        ${state.appState.resumes
-          .map((item) => `<option value="${item.id}" ${resume?.id === item.id ? "selected" : ""}>${escapeHtml(item.name)}</option>`)
-          .join("")}
-      </select>
+      <div class="resume-picker-row">
+        <select class="resume-select" id="resume-select">
+          <option value="">选择当前简历</option>
+          ${state.appState.resumes
+            .map((item) => `<option value="${item.id}" ${resume?.id === item.id ? "selected" : ""}>${escapeHtml(item.name)}</option>`)
+            .join("")}
+        </select>
+        <button class="danger-button resume-delete-button" data-action="delete-resume" ${resume ? "" : "disabled"}>删除</button>
+      </div>
       <div class="action-row">
         <button class="primary-button" data-action="autofill" ${resume ? "" : "disabled"}>预填充</button>
         <button class="ghost-button" data-action="refresh-unfilled">刷新未填项</button>

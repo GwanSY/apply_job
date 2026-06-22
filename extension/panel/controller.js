@@ -1,7 +1,7 @@
 import { buildSuggestions } from "../core/matcher.js";
 import { addEntry, addField, cloneCurrentResume, getCurrentResume, removeField, reorderEntries, updateResumeField } from "../core/resume-model.js";
 import { parseResumeFile } from "../core/resume-parser.js";
-import { getAppState, getLearnedValues, saveLearnedValues, saveOriginalFile, saveTemplate, setCurrentResume, upsertResume } from "../core/storage.js";
+import { deleteOriginalFile, deleteResume, getAppState, getLearnedValues, saveLearnedValues, saveOriginalFile, saveTemplate, setCurrentResume, upsertResume } from "../core/storage.js";
 import { getActiveTabId, runPageAutofill, scanCurrentPage, scrollToField } from "../core/tab-bridge.js";
 import { createTemplateFromResume } from "../core/template-model.js";
 import { dedupeBy } from "../core/utils.js";
@@ -60,6 +60,19 @@ export function createPanelController(state) {
     state.appState = await getAppState();
     state.draftResume = cloneCurrentResume(state.appState);
     state.status = "已切换当前简历";
+    render();
+  }
+
+  async function handleResumeDelete() {
+    const resume = getCurrentResume(state);
+    if (!resume) return;
+
+    await deleteResume(resume.id);
+    await deleteOriginalFile(resume.id);
+    state.appState = await getAppState();
+    state.draftResume = cloneCurrentResume(state.appState);
+    state.unfilled = [];
+    state.status = "已删除当前简历";
     render();
   }
 
@@ -202,6 +215,7 @@ export function createPanelController(state) {
     render,
     handleUpload,
     handleResumeSwitch,
+    handleResumeDelete,
     handleSave,
     setTemplateName,
     handleSaveTemplate,

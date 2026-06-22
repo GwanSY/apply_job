@@ -104,7 +104,8 @@ select {
 .entry-head,
 .tabs,
 .checkbox-row,
-.template-bar {
+.template-bar,
+.resume-picker-row {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -122,6 +123,19 @@ select {
 
 .template-input {
   flex: 1;
+}
+
+.resume-picker-row {
+  margin-bottom: 10px;
+}
+
+.resume-picker-row .resume-select {
+  flex: 1;
+}
+
+.resume-delete-button {
+  flex: 0 0 auto;
+  min-width: 72px;
 }
 
 .module-head,

@@ -38,6 +38,7 @@ export function bindPanelEvents(state, controller) {
 
     if (action === "save") return await controller.handleSave();
     if (action === "save-template") return await controller.handleSaveTemplate();
+    if (action === "delete-resume") return await controller.handleResumeDelete();
     if (action === "autofill") return await controller.handleAutofill();
     if (action === "refresh-unfilled") return await controller.refreshUnfilled();
     if (action === "tab") return controller.switchTab(button.dataset.tab);
