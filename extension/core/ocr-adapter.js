@@ -58,11 +58,11 @@ async function extractDocxText(file) {
   return text;
 }
 
-async function recognizeCanvas(worker, canvas) {
+async function recognizeCanvas(worker, canvas, options = undefined) {
   const {
     data: { text }
-  } = await worker.recognize(canvas);
-  return text?.trim() || "";
+  } = await worker.recognize(canvas, options);
+  return normalizeExtractedText(text || "");
 }
 
 async function recognizeCanvasByLines(worker, canvas) {
@@ -73,14 +73,9 @@ async function recognizeCanvasByLines(worker, canvas) {
 
   const texts = [];
   for (const segment of segments) {
-    const text = normalizeExtractedText(
-      await worker.recognize(
-        segment,
-        {
-          tessedit_pageseg_mode: "7"
-        }
-      ).then(({ data }) => data?.text || "")
-    );
+    const text = await recognizeCanvas(worker, segment, {
+      tessedit_pageseg_mode: "7"
+    });
     if (text) {
       texts.push(text);
     }
@@ -341,7 +336,7 @@ async function extractPdfText(file) {
       }
       await page.render({ canvasContext: context, viewport }).promise;
       const processedCanvas = createProcessedCanvas(canvas);
-      const ocrText = normalizeExtractedText(await recognizeCanvasByLines(worker, processedCanvas));
+      const ocrText = await recognizeCanvasByLines(worker, processedCanvas);
       finalText = shouldPreferOcrText(ocrText, textLayerText) ? ocrText : textLayerText;
     }
 
